@@ -72,16 +72,25 @@
   (go 1))
 
 (fn plumb [input]
-  (or (find-handler name-handlers input input)
-      (and (sys-stat.stat input) ; check if valid file path
-           (find-handler mime-handlers (mgc:file input) input))
-      (editor input)))
+  (local status (or (find-handler name-handlers input input)
+                    (and (sys-stat.stat input)       ; check if valid file path
+                         (find-handler mime-handlers (mgc:file input) input))))
+  (if status
+      (run {} "notify-send" "-t" "1000" "plumb" (.. "opening " input))
+      (run {} "notify-send" "plumb" (.. "no handler found for " input)))
+  (or status 1))
 
 (fn trim [str] (str:gsub "\n?$" ""))
 
 (local proc-status (match arg
+                     ["-p"] (-> (io.popen "wl-paste -p")
+                                (: :read :a)
+                                trim
+                                plumb)
                      [thing] (plumb thing)
-                     _ (-> (io.read :a) trim plumb)))
+                     [nil] (-> (io.read :a)
+                               trim
+                               plumb)))
 
 (os.exit (match proc-status
            (where (or :running 0)) 0
