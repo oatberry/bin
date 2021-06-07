@@ -23,8 +23,7 @@
 (fn run [{:stdin input} program ...]
   (local [read-end write-end &as pipes] [(unix.pipe)])
   (local child-pid (fork-and-exec pipes program [...]))
-  (when input
-    (unix.write write-end input))
+  (unix.write write-end (or input ""))
   (unix.close read-end)
   (unix.close write-end)
   (match (sys-wait.wait child-pid sys-wait.WNOHANG)
@@ -32,26 +31,23 @@
     (_ :exited exit-status) exit-status
     (_ killed-or-stopped) (error (.. "subprocess was " killed-or-stopped))))
 
-(fn mk-handler [program] #(run {} program $...))
-
-(local term         (mk-handler "alacritty"))
-(local editor       (mk-handler "emacs"))
-(local image-viewer (mk-handler "imv"))
-(local pdf-viewer   (mk-handler "zathura"))
-(local video-viewer (mk-handler "mpv"))
-(local web          (mk-handler "qutebrowser"))
-(local doc-editor   (mk-handler "libreoffice"))
-
-(fn web-image-handler [url]
-  (local image (assert (request url)))
-  (run {:stdin image} "imv" "-"))
+;; Handlers
+(local image-viewer #(run {} "imv" $))
+(local pdf-viewer   #(run {} "zathura" $))
+(local video-viewer #(run {} "mpv" $))
+(local web          #(run {} "qutebrowser" $))
+(local doc-editor   #(run {} "libreoffice" $))
+(local editor       #(run {} "emacsclient" "-n" $))
+(local web-image    #(run {:stdin (assert (request $))} "imv" "-"))
+(local web-pdf      #(run {:stdin (assert (request $))} "zathura" "-"))
 
 (local name-handlers
        [["^https?://(www\\.)?youtube\\.com/watch\\?v=" video-viewer]
         ["^https?://(www\\.)?youtu\\.be/"              video-viewer]
+        ["^https?://(www\\.)?twitch\\.tv/"             video-viewer]
         ["\\.(mkv|mp4|ogv|ogg|wav|mov)$"               video-viewer]
-        ["^https?://.*\\.pdf$"                         pdf-viewer]
-        ["^https?://.*\\.(png|jpg|jpeg|bmp|gif)$"      web-image-handler]
+        ["^https?://.*\\.pdf$"                         web-pdf]
+        ["^https?://.*\\.(png|jpg|jpeg|bmp|gif)$"      web-image]
         ["^https?://"                                  web]
         ["\\.(od.|docx?|xslx?|pptx?)$"                 doc-editor]])
 
@@ -61,37 +57,41 @@
         ["^video/"           video-viewer]
         ["^application/pdf"  pdf-viewer]
         ["^application/epub" pdf-viewer]
-        ["^text/xml"]        web])
+        ["^text/xml"         web]
+        ["^text/plain"       editor]])
 
 (fn find-handler [handlers match-str input]
   (fn go [n]
     (match (. handlers n)
-      [pattern handler] (if (regex.match match-str pattern "i")
-                            (handler input)
-                            (go (+ n 1)))))
+      [pattern handler]
+      (if (regex.match match-str pattern "i")
+          (do (run {} "notify-send" "-t" "1000" "plumb" (.. "opening " input))
+              (handler input))
+          (go (+ n 1)))))
   (go 1))
 
 (fn plumb [input]
   (local status (or (find-handler name-handlers input input)
                     (and (sys-stat.stat input)       ; check if valid file path
                          (find-handler mime-handlers (mgc:file input) input))))
-  (if status
-      (run {} "notify-send" "-t" "1000" "plumb" (.. "opening " input))
-      (run {} "notify-send" "plumb" (.. "no handler found for " input)))
+  (when (not status)
+    (run {} "notify-send" "plumb" (.. "no handler found for " input)))
   (or status 1))
 
 (fn trim [str] (str:gsub "\n?$" ""))
 
-(local proc-status (match arg
-                     ["-p"] (-> (io.popen "wl-paste -p")
-                                (: :read :a)
-                                trim
-                                plumb)
-                     [thing] (plumb thing)
-                     [nil] (-> (io.read :a)
-                               trim
-                               plumb)))
+(fn dispatch-args [args]
+  (match args
+    ["-p"] (-> (io.popen "wl-paste -p")
+               (: :read :a)
+               trim
+               plumb)
+    [nil] (-> (io.read :a)
+              trim
+              plumb)
+    [thing] (plumb thing)))
 
+(local proc-status (dispatch-args arg))
 (os.exit (match proc-status
            (where (or :running 0)) 0
            _ proc-status))
